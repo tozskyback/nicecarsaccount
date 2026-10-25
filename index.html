@@ -88,7 +88,7 @@ const IS_PROD = typeof location!=='undefined' && PROD_HOSTS.indexOf(location.hos
 const SUPABASE_URL = (IS_PROD?CONFIGS.production:CONFIGS.test).url;
 const SUPABASE_KEY = (IS_PROD?CONFIGS.production:CONFIGS.test).key;
 // รหัสเข้าเว็บ: ใส่ค่า SHA-256 ของรหัส (เว้นว่างไว้ แล้วเปิดเว็บ จะมีช่องให้ตั้งรหัสและสร้างค่ามาให้คัดลอก)
-const ACCESS_HASH = '';
+const ACCESS_HASH = 'cffd5226ebeac82ca1a8fdad0ee038345b56e10e3c63b384ae97453c19f218d0';
 
 // ==LOGIC-START==
 const ACCOUNTS = {deposit:'เงินจอง', pool:'กองกลาง'};
