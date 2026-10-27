@@ -121,6 +121,7 @@ function normInput(v, letter){   // รองรับหลายรหัส �
 // ชนิด -> เติมช่อง "จาก" ให้อัตโนมัติ (ใช้เฉพาะเมื่อช่องจากยังว่าง)
 function fromByStatus(account,status){
   if(status==='จำนำ'||status==='คืนจำนำ') return 'ป๊า';
+  if(status==='จอง'||status==='ปล่อยรถ') return 'ลูกค้า';
   if(status==='คอมซื้อ'||status==='คอมขาย') return 'นายหน้า';
   if(status==='ปันผล') return account==='deposit'?'กองกลาง':(account==='pool'?'เงินจอง':'');
   return '';
