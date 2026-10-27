@@ -18,7 +18,20 @@ nav button{background:transparent;color:#cbd5e1;border:1px solid #344054;padding
 nav button.on{background:#fff;color:#101828;border-color:#fff;font-weight:700}
 .spacer{flex:1}
 .banner{background:var(--warnbg);color:var(--warn);padding:8px 20px;font-size:13px}
-main{padding:16px 20px;max-width:1400px;margin:0 auto}
+main{padding:14px 16px;max-width:none;margin:0 auto}
+.tx{table-layout:fixed;width:100%;min-width:1100px}
+.tx th,.tx td{padding:6px 7px;font-size:13px;overflow-wrap:anywhere}
+.tx td input[type=text],.tx td select,.tx td textarea{width:100%;min-width:0;box-sizing:border-box}
+.tx td textarea{resize:vertical;overflow:hidden}
+.tx .desc{max-width:none}
+.tx .badge{white-space:normal}
+.tx .chip{padding:4px 8px}
+.tags{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.tag{background:#eef4ff;color:#1f4fb4;border-radius:99px;padding:2px 4px 2px 9px;font-size:12px;white-space:nowrap}
+.tag a{cursor:pointer;margin-left:3px;padding:0 5px;color:#667085;text-decoration:none}
+.tag a:hover{color:var(--bad)}
+.tag.bad{background:var(--badbg);color:var(--bad)}
+.tx .tags input.addcar{flex:1 1 90px;min-width:90px;width:auto}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
 .stat b{display:block;font-size:20px;margin-top:2px}
@@ -480,7 +493,23 @@ function renderNav(){
     let extra=''; if(k!=='cars'){ const n=S.txs.filter(t=>t.account===k&&['pending','nostatus','nocode'].includes(txState(t,EV))).length; extra=n?` <span class="badge b-pend">${n}</span>`:''; }
     return `<button data-tab="${k}" class="${S.tab===k?'on':''}">${l}${extra}</button>`; }).join('');
 }
-function render(){ renderNav(); banner(); S.tab==='cars'?renderCars():renderAccount(); }
+async function saveCars(id,list){
+  const x=S.txs.find(r=>r.id===id); if(!x||isLocked(x.account,monthOf(x))) return;
+  const patch={car_code:[...new Set(list)].join(','),car_link:''};
+  try{ await DB.update(id,patch); Object.assign(x,patch); recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); }
+}
+async function addCar(id,raw){
+  const x=S.txs.find(r=>r.id===id); if(!x) return; const add=splitCodes(normInput(raw,'N')); if(!add.length) return;
+  await saveCars(id,splitCodes(x.car_code).concat(add));
+  const el=document.querySelector(`[data-addcar="${id}"]`); if(el) el.focus();   // พิมพ์เพิ่มต่อได้เลย
+}
+function autoGrow(){ document.querySelectorAll('textarea[data-f]').forEach(t=>{ t.style.height='auto'; t.style.height=Math.max(t.scrollHeight,34)+'px'; }); }
+function render(){ renderNav(); banner(); S.tab==='cars'?renderCars():renderAccount(); autoGrow(); }
+window.addEventListener('resize',()=>{ try{ autoGrow(); }catch(e){} });
+document.addEventListener('keydown',e=>{ const t=e.target; if(t&&t.dataset&&t.dataset.addcar&&(e.key==='Enter'||e.key===',')){ e.preventDefault(); const v=t.value; t.value=''; if(v.trim()) addCar(+t.dataset.addcar,v); } });
+document.addEventListener('input',e=>{ const t=e.target;
+  if(t&&t.dataset&&t.dataset.addcar&&(!e.inputType||e.inputType==='insertReplacementText')&&S.cars.has(String(t.value).trim().toUpperCase())){ const v=t.value; t.value=''; addCar(+t.dataset.addcar,v); return; }   // เลือกจากรายการแนะนำ -> เพิ่มทันที
+  if(t&&t.tagName==='TEXTAREA'&&t.dataset.f){ t.style.height='auto'; t.style.height=Math.max(t.scrollHeight,34)+'px'; } });
 
 function renderAccount(){
   const acc=S.tab, all=S.txs.filter(t=>t.account===acc);
@@ -524,7 +553,7 @@ function renderAccount(){
     <button class="btn sec" id="btnShort">📋 สรุปที่ขาด (รถยังไม่เคลียร์)</button>
     <button class="btn sec" id="btnRedetect">🔄 ตรวจรหัส/ชนิดอีกครั้ง</button>
   </div>
-  <div class="tablewrap"><table><thead><tr><th>วันที่</th><th style="text-align:right">เงินออก</th><th style="text-align:right">เงินเข้า</th><th style="text-align:right">คงเหลือ</th><th>รายละเอียด (NOTE)</th><th>ชนิด</th><th>จาก</th><th>เคลียร์?</th><th>รหัสรถ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>
+  <div class="tablewrap"><table class="tx"><colgroup><col style="width:6.5%"><col style="width:8%"><col style="width:8%"><col style="width:8%"><col style="width:15%"><col style="width:8%"><col style="width:8%"><col style="width:8.5%"><col style="width:14%"><col style="width:12%"><col style="width:4%"></colgroup><thead><tr><th>วันที่</th><th style="text-align:right">เงินออก</th><th style="text-align:right">เงินเข้า</th><th style="text-align:right">คงเหลือ</th><th>รายละเอียด (NOTE)</th><th>ชนิด</th><th>จาก</th><th>เคลียร์?</th><th>รหัสรถ</th><th>หมายเหตุ</th><th></th></tr></thead><tbody>
   ${shown.length?shown.map(rowHtml).join(''):`<tr><td colspan="11" class="empty">ยังไม่มีรายการ${all.length?' ตามตัวกรองนี้':' อัปโหลดไฟล์ Statement ได้เลย'}</td></tr>`}
   </tbody></table></div>`;
   bindDrop();
@@ -557,16 +586,16 @@ function rowHtml(t){
   const chs=lk?[]:plateChoices(t,S.ref);
   const choiceHtml=chs.length?`<div class="warn">⚠️ ทะเบียน ${esc(t.plate)} ตรงกับหลายรหัสรถ — เลือกรหัสที่ถูกต้อง:<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">${chs.map(c=>{ const i=carInfo(c); return `<button class="chip" data-pickcar="${t.id}|${esc(c)}">${esc(c)}${i&&i.model?' · '+esc(i.model.slice(0,16)):''}</button>`; }).join('')}</div></div>`:'';
   const linkBox=(t.car_link==='auto'&&t.car_code)?`<div style="margin-top:4px;padding:5px 7px;border-radius:8px;background:var(--warnbg);color:var(--warn);font-size:11px">🔗 โยงจากทะเบียน ${esc(t.plate)} → <b>${esc(t.car_code)}</b> ใช่ไหม?${lk?'':`<div style="margin-top:4px;display:flex;gap:5px"><button class="chip" data-linkok="${t.id}">✔ ยืนยัน</button><button class="chip" data-linkno="${t.id}">✕ ไม่ใช่</button></div>`}</div>`:(t.car_link==='ok'&&t.car_code?'<div class="muted" style="font-size:11px">✔ ยืนยันรหัสรถแล้ว (จากทะเบียน)</div>':'');
-  const ta='style="width:100%;min-width:200px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px"';
+  const ta='style="width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px"';
   return `<tr>
     <td style="white-space:nowrap">${lk?'🔒 ':''}${fdate(t.tx_date)}<div class="muted" style="font-size:12px">${esc(t.tx_time||'')}</div></td>
     <td class="num">${out}${(+t.debit&&t.dir_unknown)?unk:''}</td><td class="num">${inn}${(+t.credit&&t.dir_unknown)?unk:''}</td><td class="num muted">${t.balance==null?'':money(t.balance)}</td>
     <td class="desc"><textarea rows="2" ${ta} ${dis} data-id="${t.id}" data-f="memo" placeholder="NOTE: - (พิมพ์เพิ่มได้)">${esc(noteVal)}</textarea>${descBlock}</td>
     <td><select data-id="${t.id}" data-f="status" ${dis}>${statusOpts(t.status)}</select></td>
-    <td><input type="text" list="fromlist" data-id="${t.id}" data-f="from_acc" ${dis} value="${esc(t.from_acc||'')}" placeholder="บัญชีที่โอน" style="width:130px">${fromHint}</td>
+    <td><input type="text" list="fromlist" data-id="${t.id}" data-f="from_acc" ${dis} value="${esc(t.from_acc||'')}" placeholder="บัญชีที่โอน">${fromHint}</td>
     <td>${badge}<label style="font-size:12px;display:block;margin-top:4px;cursor:pointer"><input type="checkbox" data-id="${t.id}" data-f="manual_clear" ${dis} ${t.manual_clear?'checked':''}> เคลียร์</label></td>
-    <td><input type="text" data-id="${t.id}" data-f="car_code" ${dis} value="${esc(t.car_code)}" placeholder="Nxxx" list="carlist">${linkBox}${carHtml}${choiceHtml}${viaHtml}${plateHtml}</td>
-    <td style="min-width:200px"><textarea rows="2" ${ta} ${dis} data-id="${t.id}" data-f="remark" placeholder="โน้ตเพิ่มเติม">${esc(t.remark||'')}</textarea>${warn?`<div class="warn">${warn}</div>`:''}${cfHtml}${unkCar}</td>
+    <td><div class="tags">${codes.map(c=>`<span class="tag${(S.carsOk&&!carInfo(c))?' bad':''}">${esc(c)}${lk?'':`<a data-rmcar="${t.id}|${esc(c)}" title="เอาออก">×</a>`}</span>`).join('')}${lk?'':`<input type="text" class="addcar" list="carlist" data-addcar="${t.id}" placeholder="+ เพิ่มรหัสรถ" autocomplete="off">`}</div>${linkBox}${carHtml}${choiceHtml}${viaHtml}${plateHtml}</td>
+    <td><textarea rows="2" ${ta} ${dis} data-id="${t.id}" data-f="remark" placeholder="โน้ตเพิ่มเติม">${esc(t.remark||'')}</textarea>${warn?`<div class="warn">${warn}</div>`:''}${cfHtml}${unkCar}</td>
     <td><button class="chip" data-del="${t.id}" ${dis} title="ลบ">✕</button></td></tr>`;
 }
 function renderCars(){
@@ -626,7 +655,7 @@ function openShort(){
 
 // ===================== events =====================
 document.addEventListener('click',async e=>{
-  const t=e.target.closest('[data-tab],[data-filter],[data-flip],[data-del],[data-carclear],[data-applycar],[data-linkok],[data-linkno],[data-pickcar]'); if(!t) return;
+  const t=e.target.closest('[data-tab],[data-filter],[data-flip],[data-del],[data-carclear],[data-applycar],[data-linkok],[data-linkno],[data-pickcar],[data-rmcar]'); if(!t) return;
   if(t.dataset.tab){ S.tab=t.dataset.tab; S.filter='all'; S.month=''; S.q=''; S.from=''; render(); }
   else if(t.dataset.filter){ S.filter=t.dataset.filter; render(); }
   else if(t.dataset.flip){ const id=+t.dataset.flip, x=S.txs.find(r=>r.id===id); if(isLocked(x.account,monthOf(x))){ toast('เดือนนี้เซฟยอดแล้ว'); return; } const p={debit:x.credit,credit:x.debit,dir_unknown:false};
@@ -635,6 +664,7 @@ document.addEventListener('click',async e=>{
     try{ for(const x of s.txs){ if(isLocked(x.account,monthOf(x))) continue; if(!!x.manual_clear!==v){ await DB.update(x.id,{manual_clear:v}); x.manual_clear=v; } } recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   else if(t.dataset.applycar){ e.preventDefault(); const [id,car]=t.dataset.applycar.split('|'); const x=S.txs.find(r=>r.id===+id);
     try{ await DB.update(+id,{car_code:car}); x.car_code=car; recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
+  else if(t.dataset.rmcar){ e.preventDefault(); const [id,code]=t.dataset.rmcar.split('|'), x=S.txs.find(r=>r.id===+id); if(!x) return; await saveCars(+id,splitCodes(x.car_code).filter(c=>c!==code)); }
   else if(t.dataset.pickcar){ const [id,car]=t.dataset.pickcar.split('|'), x=S.txs.find(r=>r.id===+id); if(!x||isLocked(x.account,monthOf(x))) return;
     const patch={car_code:car,car_link:'ok'}; try{ await DB.update(x.id,patch); Object.assign(x,patch); recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   else if(t.dataset.linkok||t.dataset.linkno){ const id=+(t.dataset.linkok||t.dataset.linkno), x=S.txs.find(r=>r.id===id); if(!x||isLocked(x.account,monthOf(x))) return;
@@ -648,6 +678,7 @@ document.addEventListener('change',async e=>{
   if(el.id==='month'){ S.month=el.value; render(); return; }
   if(el.id==='fromsel'){ S.from=el.value; render(); return; }
   if(el.id==='file'){ if(el.files[0]) importFile(el.files[0]); return; }
+  if(el.dataset.addcar){ const v=el.value; el.value=''; if(v.trim()) await addCar(+el.dataset.addcar,v); return; }
   if(!el.dataset.f) return;
   const id=+el.dataset.id, f=el.dataset.f, x=S.txs.find(r=>r.id===id); let v=el.value;
   if(el.type==='checkbox') v=el.checked; else if(f==='car_code') v=normInput(v,'N');
