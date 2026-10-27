@@ -80,10 +80,10 @@ pre{background:#101828;color:#d0d5dd;padding:10px;border-radius:8px;max-height:2
 // ใช้ Supabase โปรเจกต์เดียวกับ NICE CARS (สลับฐานจริง/ทดสอบตามชื่อโฮสต์ เหมือนระบบเต็นท์)
 // ใส่ publishable key ของแต่ละฐาน (ถ้าเว้นว่าง เว็บจะอยู่โหมดทดลอง เก็บข้อมูลในเบราว์เซอร์)
 const CONFIGS = {
-  production: { url:'https://vlbysgrmnuhbubgzdmar.supabase.co', key:'' },
+  production: { url:'https://vlbysgrmnuhbubgzdmar.supabase.co', key:'sb_publishable_P1UOIzNROBbFHUSXFxST2w_wc1yF-3U' },
   test:       { url:'https://qrtiqktriefakjlmhdvq.supabase.co', key:'' }
 };
-const PROD_HOSTS = [];   // ใส่โดเมนจริงของเว็บนี้ เช่น 'nicecars-accounts.vercel.app' (โดเมนอื่น/localhost = ฐานทดสอบ)
+const PROD_HOSTS = ['nicecarsaccount.vercel.app'];   // ใส่โดเมนจริงของเว็บนี้ เช่น 'nicecars-accounts.vercel.app' (โดเมนอื่น/localhost = ฐานทดสอบ)
 const IS_PROD = typeof location!=='undefined' && PROD_HOSTS.indexOf(location.hostname)!==-1;
 const SUPABASE_URL = (IS_PROD?CONFIGS.production:CONFIGS.test).url;
 const SUPABASE_KEY = (IS_PROD?CONFIGS.production:CONFIGS.test).key;
@@ -95,21 +95,30 @@ const ACCOUNTS = {deposit:'เงินจอง', pool:'กองกลาง'}
 const PAIR = ['จำนำ','ซื้อรถ'];                          // เงื่อนไข 1: ต้องมีครบทั้งคู่
 const SEQ  = ['จอง','ปล่อยรถ','คืนจำนำ','ปันผล'];      // เงื่อนไข 2: ต้องเรียงตามลำดับ
 const ALL_STATUS = [...PAIR, ...SEQ];
-const DEFAULT_KW = {'จำนำ':['จำนำ'],'ซื้อรถ':['ซื้อรถ','ซื้อ'],'จอง':['จอง'],'ปล่อยรถ':['ปล่อยรถ'],'คืนจำนำ':['คืนจำนำ'],'ปันผล':['ปันผล']};
+const DEFAULT_KW = {'จำนำ':['จำนำ'],'ซื้อรถ':['ซื้อรถ','ซื้อ'],'คอมซื้อ':['คอมซื้อ'],'คอมขาย':['คอมขาย'],'จอง':['จอง'],'ปล่อยรถ':['ปล่อยรถ'],'คืนจำนำ':['คืนจำนำ'],'ปันผล':['ปันผล']};
 const pad = (n,l=2)=>String(n).padStart(l,'0');
 const r2 = n=>Math.round(n*100)/100;
 const THMON = {'ม.ค.':1,'ก.พ.':2,'มี.ค.':3,'เม.ย.':4,'พ.ค.':5,'มิ.ย.':6,'ก.ค.':7,'ส.ค.':8,'ก.ย.':9,'ต.ค.':10,'พ.ย.':11,'ธ.ค.':12};
 
 function normCode(letter, num){ return letter.toUpperCase()+String(num); }   // เทียบรหัสแบบเป๊ะ ๆ ตามที่เขียน ไม่เติมเลข 0
-function normInput(v, letter){
-  return (v||'').replace(/[\s-]/g,'').toUpperCase();
+const splitCodes=v=>String(v||'').split(/[\s,;/]+/).filter(Boolean);
+function normInput(v, letter){   // รองรับหลายรหัส คั่นด้วย , ; / หรือช่องว่าง
+  return String(v||'').replace(/([A-Za-z])[\s-]+(\d)/g,'$1$2').split(/[\s,;/]+/).map(x=>x.replace(/-/g,'').toUpperCase()).filter(Boolean).join(',');
+}
+// ชนิด -> เติมช่อง "จาก" ให้อัตโนมัติ (ใช้เฉพาะเมื่อช่องจากยังว่าง)
+function fromByStatus(account,status){
+  if(status==='จำนำ'||status==='คืนจำนำ') return 'ป๊า';
+  if(status==='คอมซื้อ'||status==='คอมขาย') return 'นายหน้า';
+  if(status==='ปันผล') return account==='deposit'?'กองกลาง':(account==='pool'?'เงินจอง':'');
+  return '';
 }
 function extractCodes(text){
-  const out={case_code:'',car_code:'',multi:false};
+  const out={case_code:'',car_code:'',cars:[],multi:false};
   const re=/(?<![A-Za-z0-9])([CN])(\d{1,4})(?!\d)/gi; let m;
   while((m=re.exec(text||''))){
     const L=m[1].toUpperCase(), code=normCode(L,m[2]);
     const k=L==='C'?'case_code':'car_code';
+    if(L==='N'&&!out.cars.includes(code)) out.cars.push(code);
     if(!out[k]) out[k]=code; else if(out[k]!==code) out.multi=true;
   }
   return out;
@@ -239,35 +248,51 @@ function makeTx(account,row,kw,source){
   }
   const debit=dir===-1?row.amount:0, credit=dir===1?row.amount:0;
   return {account,tx_date:row.date,tx_time:row.time,description,memo,debit:debit||0,credit:credit||0,balance:row.balance,
-    case_code:codes.case_code,car_code:codes.car_code,plate:extractPlate(ref),from_acc:'',remark:'',status:st.status,manual_clear:false,source_file:source||'',
+    case_code:codes.case_code,car_code:codes.cars.join(','),plate:extractPlate(ref),from_acc:fromByStatus(account,st.status),remark:'',car_link:'',status:st.status,manual_clear:false,source_file:source||'',
     dir_unknown:unk, uniq:[account,row.date,row.time,row.amount,row.balance,description,memo].join('|')};
 }
 
 // ---- กติกาเคลียร์ ----
+// พบทะเบียนใน NOTE ตรงกับระบบเต็นท์ (เพียง 1 คัน) -> ใส่รหัสรถให้เลย + ติดธง car_link='auto' (รอยืนยัน)
+function autoLinkOne(t,ref){
+  if(!t||t.car_code||!t.plate||t.car_link==='rejected') return null;
+  const s=ref&&ref.plates&&ref.plates.get(t.plate); if(!s||s.size!==1) return null;
+  return {car_code:[...s][0],car_link:'auto'};
+}
+// ทะเบียนตรงกับหลายรหัสรถในระบบเต็นท์ -> ต้องให้เลือก/คอนเฟิร์ม (ไม่ autofill)
+function plateChoices(t,ref){
+  if(!t||t.car_code||!t.plate||t.car_link==='rejected') return [];
+  const s=ref&&ref.plates&&ref.plates.get(t.plate); return (s&&s.size>1)?[...s].sort():[];
+}
 function evaluate(txs,ref){
   const sysP=(ref&&ref.plates)||new Map();
   // map เคส -> รถ (ใช้เมื่อเคสนั้นผูกกับรถเพียงคันเดียว)
   const c2c={}, p2c={};
   for(const t of txs){
-    if(t.case_code&&t.car_code) (c2c[t.case_code]=c2c[t.case_code]||new Set()).add(t.car_code);
-    if(t.plate&&t.car_code) (p2c[t.plate]=p2c[t.plate]||new Set()).add(t.car_code);
+    for(const c of splitCodes(t.car_code)){
+      if(t.case_code) (c2c[t.case_code]=c2c[t.case_code]||new Set()).add(c);
+      if(t.plate) (p2c[t.plate]=p2c[t.plate]||new Set()).add(c);
+    }
   }
   for(const pl of new Set(txs.map(t=>t.plate).filter(Boolean))){ const sp=sysP.get(pl); if(sp) for(const c of sp) (p2c[pl]=p2c[pl]||new Set()).add(c); }   // ทะเบียนจากระบบเต็นท์ (car_details)
   // ทะเบียนเดียวกันแต่คนละรหัสรถ -> แจ้งเตือน
   const conflicts=new Map(); for(const [pl,s] of Object.entries(p2c)) if(s.size>1) conflicts.set(pl,[...s].sort());
-  const subj=new Map(), txKey=new Map(), txVia=new Map();
+  const subj=new Map(), txKey=new Map(), txKeys=new Map(), txVia=new Map();
   for(const t of txs){
-    let key=t.car_code;
-    if(!key&&t.case_code){ const s=c2c[t.case_code]; if(s&&s.size===1){ key=[...s][0]; txVia.set(t.id,'เคส '+t.case_code); } }
-    if(!key&&t.plate){ const s=p2c[t.plate]; if(s&&s.size===1){ key=[...s][0]; txVia.set(t.id,'ทะเบียน '+t.plate); } }
-    if(!key) key=t.case_code||t.plate||null;
-    if(!key){ txKey.set(t.id,null); continue; }
-    txKey.set(t.id,key);
-    if(!subj.has(key)) subj.set(key,{key,isCar:/^N\d/.test(key),plates:new Set(),have:new Set(),cases:new Set(),count:0,inSum:0,outSum:0,txs:[]});
-    const s=subj.get(key); s.count++; s.txs.push(t); if(t.plate) s.plates.add(t.plate);
-    if(t.status) s.have.add(t.status);
-    if(t.case_code) s.cases.add(t.case_code);
-    s.inSum+=+t.credit||0; s.outSum+=+t.debit||0;
+    let keys=splitCodes(t.car_code), key=keys[0]||null;
+    if(!key&&t.case_code){ const s=c2c[t.case_code]; if(s&&s.size===1){ key=[...s][0]; keys=[key]; txVia.set(t.id,'เคส '+t.case_code); } }
+    if(!key&&t.plate&&t.car_link!=='rejected'){ const s=p2c[t.plate]; if(s&&s.size===1){ key=[...s][0]; keys=[key]; txVia.set(t.id,'ทะเบียน '+t.plate); } }
+    if(!key){ key=t.case_code||t.plate||null; if(key) keys=[key]; }
+    if(!key){ txKey.set(t.id,null); txKeys.set(t.id,[]); continue; }
+    txKey.set(t.id,key); txKeys.set(t.id,keys);
+    const multi=keys.length>1;
+    for(const k of keys){
+      if(!subj.has(k)) subj.set(k,{key:k,isCar:/^N\d/.test(k),plates:new Set(),have:new Set(),cases:new Set(),count:0,multiN:0,inSum:0,outSum:0,txs:[]});
+      const s=subj.get(k); s.count++; s.txs.push(t); if(t.plate) s.plates.add(t.plate);
+      if(t.status) s.have.add(t.status);
+      if(t.case_code) s.cases.add(t.case_code);
+      if(multi) s.multiN++; else { s.inSum+=+t.credit||0; s.outSum+=+t.debit||0; }   // รายการที่ใช้ร่วมหลายคัน ยังไม่แยกยอด จึงไม่นับ
+    }
   }
   for(const s of subj.values()){
     // เงื่อนไข 1
@@ -282,16 +307,17 @@ function evaluate(txs,ref){
     if(!s.rule2.ok) s.warnings.push((hi>=0?`ถึง "${SEQ[hi]}" แล้ว `:'ยังไม่เริ่ม ')+`ยังขาด: ${s.rule2.missing.join(' → ')}`);
     if(!s.isCar) s.warnings.push('ยังไม่ผูกรหัสรถ (Nxxx)');
     if(s.cleared) s.warnings=[];
+    if(s.multiN) s.warnings.push(`มี ${s.multiN} รายการที่ใช้ร่วมหลายรหัสรถ — ต้องแจ้งยอดแยกรายคัน (ยังไม่นับยอดเข้าสรุป)`);
     s.conf=[...s.plates].filter(pl=>conflicts.has(pl)).map(pl=>({plate:pl,cars:conflicts.get(pl)}));
   }
-  return {subj,txKey,txVia,conflicts};
+  return {subj,txKey,txKeys,txVia,conflicts};
 }
 function txState(t,ev){
   if(t.manual_clear) return 'clear';
   if(!t.car_code&&!t.case_code) return 'nocode';
   if(!t.status) return 'nostatus';
-  const s=ev.subj.get(ev.txKey.get(t.id));
-  return s&&s.cleared?'clear':'pending';
+  const ks=ev.txKeys&&ev.txKeys.get(t.id), list=(ks&&ks.length)?ks:[ev.txKey.get(t.id)];
+  return list.every(k=>{ const s=ev.subj.get(k); return s&&s.cleared; })?'clear':'pending';
 }
 const fmt=n=>(+n||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
 function buildShortfall(ev){
@@ -318,7 +344,7 @@ function carryOver(newRows,oldRows){
     if(!m) return n;
     m.used=true; kept++;
     const o=m.o, r={...n};
-    for(const f of ['memo','from_acc','car_code','case_code','plate','status','remark']){
+    for(const f of ['memo','from_acc','car_code','case_code','plate','status','remark','car_link']){
       if(o[f]==null||o[f]==='') continue;
       if(f==='memo'&&o.memo==='-') continue;   // เดิมไม่มี NOTE -> ใช้ NOTE จากไฟล์ใหม่
       r[f]=o[f];
@@ -341,7 +367,7 @@ function closingOf(list){
 }
 // ==LOGIC-END==
 
-if(typeof module!=='undefined') module.exports={carryOver,closingOf,monthOf,extractPlate,splitLabels,buildShortfall,shortfallText,splitMemo,buildLine,MK,MK2,parseStatementLines,extractCodes,detectStatus,evaluate,txState,makeTx,normInput,DEFAULT_KW};
+if(typeof module!=='undefined') module.exports={fromByStatus,splitCodes,plateChoices,autoLinkOne,carryOver,closingOf,monthOf,extractPlate,splitLabels,buildShortfall,shortfallText,splitMemo,buildLine,MK,MK2,parseStatementLines,extractCodes,detectStatus,evaluate,txState,makeTx,normInput,DEFAULT_KW};
 </script>
 
 <script>
@@ -465,11 +491,12 @@ function renderAccount(){
   if(q) list=list.filter(t=>[t.memo,t.description,t.car_code,t.plate,t.from_acc,t.status].join(' ').toLowerCase().includes(q));
   const st=t=>txState(t,EV);
   const cnt={all:list.length,pending:0,clear:0,nocode:0,nostatus:0}; list.forEach(t=>cnt[st(t)]++);
-  const shown=S.filter==='all'?list:list.filter(t=>st(t)===S.filter);
+  const nLinkPend=list.filter(t=>t.car_link==='auto'&&t.car_code).length;
+  const shown=S.filter==='all'?list:(S.filter==='link'?list.filter(t=>t.car_link==='auto'&&t.car_code):list.filter(t=>st(t)===S.filter));
   const sumIn=list.reduce((a,t)=>a+(+t.credit||0),0), sumOut=list.reduce((a,t)=>a+(+t.debit||0),0);
   const froms=[...new Set(S.txs.map(t=>t.from_acc).filter(Boolean))].sort();
   const conf=[...EV.conflicts.entries()];
-  const chips=[['all','ทั้งหมด'],['pending','ยังไม่เคลียร์'],['clear','เคลียร์แล้ว'],['nocode','ไม่มีรหัส'],['nostatus','ไม่ระบุชนิด']];
+  const chips=[['all','ทั้งหมด'],['pending','ยังไม่เคลียร์'],['clear','เคลียร์แล้ว'],['nocode','ไม่มีรหัส'],['nostatus','ไม่ระบุชนิด'],['link',`รอยืนยันรหัสรถ${nLinkPend?' ('+nLinkPend+')':''}`]];
   $('#main').innerHTML=`
   ${conf.length?`<div class="banner" style="background:var(--badbg);color:var(--bad);border-radius:10px;margin-bottom:12px">⚠️ เลขทะเบียนเดียวกันแต่ไม่ใช่รหัสรถเดียวกัน: ${conf.map(([pl,c])=>`<b>${esc(pl)}</b> → ${c.map(esc).join(', ')}`).join(' · ')}</div>`:''}
   ${S.month&&isLocked(acc,S.month)?`<div class="banner" style="border-radius:10px;margin-bottom:12px">🔒 เดือน ${fm(S.month)} เซฟยอดแล้ว — อัปไฟล์ใหม่จะไม่แตะเดือนนี้ และแก้ไขรายการไม่ได้จนกว่าจะยกเลิกเซฟ</div>`:''}
@@ -488,11 +515,12 @@ function renderAccount(){
   <div class="bar">
     ${chips.map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" data-filter="${k}">${l}</button>`).join('')}
     <select id="month"><option value="">ทุกเดือน</option>${months.map(m=>`<option value="${m}" ${S.month===m?'selected':''}>${isLocked(acc,m)?'🔒 ':''}${fm(m)}</option>`).join('')}</select>
-    ${froms.length?`<select id="fromsel"><option value="">ทุกบัญชีที่โอนมา</option>${froms.map(f=>`<option ${S.from===f?'selected':''}>${esc(f)}</option>`).join('')}</select>`:''}
+    ${froms.length?`<select id="fromsel"><option value="">ทุกบัญชีที่โอน</option>${froms.map(f=>`<option ${S.from===f?'selected':''}>${esc(f)}</option>`).join('')}</select>`:''}
     <input type="search" id="q" placeholder="ค้นหา รายละเอียด / รหัสรถ / ทะเบียน / จาก" value="${esc(S.q)}">
     <span class="spacer"></span>
     <button class="btn sec" id="btnSaveMonth">${S.month&&isLocked(acc,S.month)?'🔓 ยกเลิกเซฟเดือนนี้':'💾 เซฟยอดเดือนนี้'}</button>
     <button class="btn sec" id="btnMonths">📅 ยอดที่เซฟไว้</button>
+    ${nLinkPend?`<button class="btn sec" id="btnLinkAll">✔ ยืนยันรหัสรถทั้งหมด (${nLinkPend})</button>`:''}
     <button class="btn sec" id="btnShort">📋 สรุปที่ขาด (รถยังไม่เคลียร์)</button>
     <button class="btn sec" id="btnRedetect">🔄 ตรวจรหัส/ชนิดอีกครั้ง</button>
   </div>
@@ -523,18 +551,21 @@ function rowHtml(t){
   const cfHtml=cf?`<div class="warn">⚠️ ทะเบียน ${esc(t.plate)} ตรงกับหลายรหัสรถ: ${cf.map(esc).join(', ')}</div>`:'';
   const fcs=(!/^N\d/.test(key||'')&&t.from_acc&&S.fc[t.from_acc])?[...S.fc[t.from_acc]]:[];
   const fromHint=(fcs.length&&!lk)?`<div style="font-size:11px">เคยโอนให้ ${fcs.slice(0,3).map(c=>`<a href="#" data-applycar="${t.id}|${esc(c)}">${esc(c)}</a>`).join(', ')}</div>`:'';
-  const ci=t.car_code?carInfo(t.car_code):null;
-  const carHtml=ci?`<div class="muted" style="font-size:11px">${esc(ci.model||'')} <span class="badge ${ci.sold?'b-grey':'b-clear'}">${carSys(ci)}</span></div>`:'';
-  const unkCar=(S.carsOk&&t.car_code&&!ci)?`<div class="warn">⚠️ ไม่พบรหัส ${esc(t.car_code)} ในระบบเต็นท์</div>`:'';
+  const codes=splitCodes(t.car_code), cis=codes.map(c=>[c,carInfo(c)]);
+  const carHtml=cis.filter(x=>x[1]).map(([c,i])=>`<div class="muted" style="font-size:11px">${codes.length>1?esc(c)+' · ':''}${esc(i.model||'')} <span class="badge ${i.sold?'b-grey':'b-clear'}">${carSys(i)}</span></div>`).join('');
+  const unkCar=(S.carsOk?cis.filter(x=>!x[1]&&/^N\d/.test(x[0])).map(([c])=>`<div class="warn">⚠️ ไม่พบรหัส ${esc(c)} ในระบบเต็นท์</div>`).join(''):'')+(codes.length>1?`<div class="warn">⚠️ มีหลายรหัสรถ (${codes.map(esc).join(', ')}) — ต้องแจ้งยอดแยกรายคัน (ยังไม่นับยอดรายการนี้เข้าสรุปรายคัน)</div>`:'');
+  const chs=lk?[]:plateChoices(t,S.ref);
+  const choiceHtml=chs.length?`<div class="warn">⚠️ ทะเบียน ${esc(t.plate)} ตรงกับหลายรหัสรถ — เลือกรหัสที่ถูกต้อง:<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">${chs.map(c=>{ const i=carInfo(c); return `<button class="chip" data-pickcar="${t.id}|${esc(c)}">${esc(c)}${i&&i.model?' · '+esc(i.model.slice(0,16)):''}</button>`; }).join('')}</div></div>`:'';
+  const linkBox=(t.car_link==='auto'&&t.car_code)?`<div style="margin-top:4px;padding:5px 7px;border-radius:8px;background:var(--warnbg);color:var(--warn);font-size:11px">🔗 โยงจากทะเบียน ${esc(t.plate)} → <b>${esc(t.car_code)}</b> ใช่ไหม?${lk?'':`<div style="margin-top:4px;display:flex;gap:5px"><button class="chip" data-linkok="${t.id}">✔ ยืนยัน</button><button class="chip" data-linkno="${t.id}">✕ ไม่ใช่</button></div>`}</div>`:(t.car_link==='ok'&&t.car_code?'<div class="muted" style="font-size:11px">✔ ยืนยันรหัสรถแล้ว (จากทะเบียน)</div>':'');
   const ta='style="width:100%;min-width:200px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px"';
   return `<tr>
     <td style="white-space:nowrap">${lk?'🔒 ':''}${fdate(t.tx_date)}<div class="muted" style="font-size:12px">${esc(t.tx_time||'')}</div></td>
     <td class="num">${out}${(+t.debit&&t.dir_unknown)?unk:''}</td><td class="num">${inn}${(+t.credit&&t.dir_unknown)?unk:''}</td><td class="num muted">${t.balance==null?'':money(t.balance)}</td>
     <td class="desc"><textarea rows="2" ${ta} ${dis} data-id="${t.id}" data-f="memo" placeholder="NOTE: - (พิมพ์เพิ่มได้)">${esc(noteVal)}</textarea>${descBlock}</td>
     <td><select data-id="${t.id}" data-f="status" ${dis}>${statusOpts(t.status)}</select></td>
-    <td><input type="text" list="fromlist" data-id="${t.id}" data-f="from_acc" ${dis} value="${esc(t.from_acc||'')}" placeholder="บัญชีที่โอนมา" style="width:130px">${fromHint}</td>
+    <td><input type="text" list="fromlist" data-id="${t.id}" data-f="from_acc" ${dis} value="${esc(t.from_acc||'')}" placeholder="บัญชีที่โอน" style="width:130px">${fromHint}</td>
     <td>${badge}<label style="font-size:12px;display:block;margin-top:4px;cursor:pointer"><input type="checkbox" data-id="${t.id}" data-f="manual_clear" ${dis} ${t.manual_clear?'checked':''}> เคลียร์</label></td>
-    <td><input type="text" data-id="${t.id}" data-f="car_code" ${dis} value="${esc(t.car_code)}" placeholder="Nxxx" list="carlist">${carHtml}${viaHtml}${plateHtml}</td>
+    <td><input type="text" data-id="${t.id}" data-f="car_code" ${dis} value="${esc(t.car_code)}" placeholder="Nxxx" list="carlist">${linkBox}${carHtml}${choiceHtml}${viaHtml}${plateHtml}</td>
     <td style="min-width:200px"><textarea rows="2" ${ta} ${dis} data-id="${t.id}" data-f="remark" placeholder="โน้ตเพิ่มเติม">${esc(t.remark||'')}</textarea>${warn?`<div class="warn">${warn}</div>`:''}${cfHtml}${unkCar}</td>
     <td><button class="chip" data-del="${t.id}" ${dis} title="ลบ">✕</button></td></tr>`;
 }
@@ -595,7 +626,7 @@ function openShort(){
 
 // ===================== events =====================
 document.addEventListener('click',async e=>{
-  const t=e.target.closest('[data-tab],[data-filter],[data-flip],[data-del],[data-carclear],[data-applycar]'); if(!t) return;
+  const t=e.target.closest('[data-tab],[data-filter],[data-flip],[data-del],[data-carclear],[data-applycar],[data-linkok],[data-linkno],[data-pickcar]'); if(!t) return;
   if(t.dataset.tab){ S.tab=t.dataset.tab; S.filter='all'; S.month=''; S.q=''; S.from=''; render(); }
   else if(t.dataset.filter){ S.filter=t.dataset.filter; render(); }
   else if(t.dataset.flip){ const id=+t.dataset.flip, x=S.txs.find(r=>r.id===id); if(isLocked(x.account,monthOf(x))){ toast('เดือนนี้เซฟยอดแล้ว'); return; } const p={debit:x.credit,credit:x.debit,dir_unknown:false};
@@ -604,6 +635,11 @@ document.addEventListener('click',async e=>{
     try{ for(const x of s.txs){ if(isLocked(x.account,monthOf(x))) continue; if(!!x.manual_clear!==v){ await DB.update(x.id,{manual_clear:v}); x.manual_clear=v; } } recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   else if(t.dataset.applycar){ e.preventDefault(); const [id,car]=t.dataset.applycar.split('|'); const x=S.txs.find(r=>r.id===+id);
     try{ await DB.update(+id,{car_code:car}); x.car_code=car; recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
+  else if(t.dataset.pickcar){ const [id,car]=t.dataset.pickcar.split('|'), x=S.txs.find(r=>r.id===+id); if(!x||isLocked(x.account,monthOf(x))) return;
+    const patch={car_code:car,car_link:'ok'}; try{ await DB.update(x.id,patch); Object.assign(x,patch); recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
+  else if(t.dataset.linkok||t.dataset.linkno){ const id=+(t.dataset.linkok||t.dataset.linkno), x=S.txs.find(r=>r.id===id); if(!x||isLocked(x.account,monthOf(x))) return;
+    const patch=t.dataset.linkok?{car_link:'ok'}:{car_code:'',car_link:'rejected'};
+    try{ await DB.update(id,patch); Object.assign(x,patch); recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   else if(t.dataset.del){ const id=+t.dataset.del, xx=S.txs.find(r=>r.id===id); if(xx&&isLocked(xx.account,monthOf(xx))){ toast('เดือนนี้เซฟยอดแล้ว'); return; } if(!confirm('ลบรายการนี้?')) return;
     try{ await DB.remove([id]); S.txs=S.txs.filter(r=>r.id!==id); recompute(); render(); }catch(err){ toast('ลบไม่สำเร็จ: '+err.message); } }
 });
@@ -622,11 +658,14 @@ document.addEventListener('change',async e=>{
   }
   if(f==='memo'&&!String(v).trim()) v='-';
   if(f==='from_acc') v=String(v).trim();
-  const patch={[f]:v};
+  const patch={[f]:v}; if(f==='car_code') patch.car_link='';
+  if(f==='status'&&!x.from_acc){ const fa=fromByStatus(x.account,v); if(fa) patch.from_acc=fa; }
   if(f==='memo'){   // พิมพ์ NOTE เอง -> เติมรหัส/ทะเบียน/ชนิดที่ยังว่างให้ (ไม่ทับช่องที่มีค่า)
     const c=extractCodes(v), pl=extractPlate(v), st=detectStatus(v,S.kw);
-    if(!x.car_code&&c.car_code) patch.car_code=c.car_code; if(!x.case_code&&c.case_code) patch.case_code=c.case_code;
+    if(!x.car_code&&c.cars.length) patch.car_code=c.cars.join(','); if(!x.case_code&&c.case_code) patch.case_code=c.case_code;
     if(!x.plate&&pl) patch.plate=pl; if(!x.status&&st.status) patch.status=st.status;
+    { const stt=patch.status||x.status; if(!x.from_acc&&stt){ const fa=fromByStatus(x.account,stt); if(fa) patch.from_acc=fa; } }
+    const al=autoLinkOne({...x,...patch},S.ref); if(al) Object.assign(patch,al);
   }
   try{ await DB.update(id,patch); Object.assign(x,patch); recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); }
 });
@@ -635,10 +674,16 @@ document.addEventListener('click',async e=>{
   if(e.target.id==='btnRedetect'){
     let n=0; for(const t of S.txs.filter(r=>r.account===S.tab&&!isLocked(r.account,monthOf(r)))){
       const ref=t.memo||t.description, c=extractCodes(ref), s=detectStatus(ref,S.kw), p={};
-      if(!t.case_code&&c.case_code) p.case_code=c.case_code; if(!t.plate&&extractPlate(ref)) p.plate=extractPlate(ref); if(!t.car_code&&c.car_code) p.car_code=c.car_code; if(!t.status&&s.status) p.status=s.status;
+      if(!t.case_code&&c.case_code) p.case_code=c.case_code; if(!t.plate&&extractPlate(ref)) p.plate=extractPlate(ref); if(!t.car_code&&c.cars.length) p.car_code=c.cars.join(','); if(!t.status&&s.status) p.status=s.status;
+      { const stt=p.status||t.status; if(!t.from_acc&&stt){ const fa=fromByStatus(t.account,stt); if(fa) p.from_acc=fa; } }
+      { const al=autoLinkOne({...t,...p},S.ref); if(al) Object.assign(p,al); }
       if(Object.keys(p).length){ try{ await DB.update(t.id,p); Object.assign(t,p); n++; }catch(err){ toast('ผิดพลาด: '+err.message); break; } } }
     recompute(); render(); toast(`เติมข้อมูลให้ ${n} รายการ (ไม่ทับช่องที่มีค่าแล้ว)`);
   }
+  if(e.target.id==='btnLinkAll'){
+    const rows=S.txs.filter(r=>r.account===S.tab&&r.car_link==='auto'&&r.car_code&&!isLocked(r.account,monthOf(r)));
+    if(!rows.length||!confirm(`ยืนยันรหัสรถที่โยงจากทะเบียนทั้งหมด ${rows.length} รายการ?`)) return;
+    try{ for(const r of rows){ await DB.update(r.id,{car_link:'ok'}); r.car_link='ok'; } render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   if(e.target.id==='btnKw') openKw();
   if(e.target.id==='btnShort') openShort();
   if(e.target.id==='btnMonths') openMonths();
@@ -712,11 +757,13 @@ async function importFile(file){
     const acc=S.tab, fresh=rows.map(r=>makeTx(acc,r,S.kw,file.name));
     const lockedSet=lockedMonths(acc), skipped=fresh.filter(t=>lockedSet.has(monthOf(t))), usable=fresh.filter(t=>!lockedSet.has(monthOf(t)));
     const oldPrev=S.txs.filter(t=>t.account===acc&&!lockedSet.has(monthOf(t))), co=carryOver(usable,oldPrev), news=co.rows, oldN=oldPrev.length;
+    news.forEach(r=>{ if(!r.from_acc&&r.status){ const fa=fromByStatus(r.account,r.status); if(fa) r.from_acc=fa; } });
+    const nLink=news.filter(r=>{ const al=autoLinkOne(r,S.ref); if(al){ Object.assign(r,al); return true; } return false; }).length;
     const nCode=fresh.filter(t=>t.case_code||t.car_code).length, nSt=fresh.filter(t=>t.status).length, nUnk=fresh.filter(t=>t.dir_unknown).length;
     window.__pending=news;
     showModal(`<h3>ตรวจสอบก่อนนำเข้า · ${ACCOUNTS[acc]}</h3>
       <p>อ่านได้ <b>${fresh.length}</b> รายการ${co.kept?` · <span style="color:var(--ok)">✔ คงข้อมูลที่เคยแก้ไว้ให้ ${co.kept} รายการ</span>`:''}${skipped.length?` · <span style="color:#1f4fb4">🔒 ข้ามรายการในเดือนที่เซฟแล้ว ${skipped.length} รายการ</span>`:''}<br>${oldN?`<span style="color:var(--bad)">⚠️ จะทับรายการเดิมของ ${ACCOUNTS[acc]} ที่ยังไม่เซฟเดือน (${oldN} รายการ) ด้วยไฟล์นี้</span><br>`:''}${co.kept?`ใช้ข้อมูลเดิมที่เคยแก้/กรอกไว้ต่อให้ <b>${co.kept}</b> รายการ (จับคู่จากวันเวลา/DESC)<br>`:''}${skipped.length?`<span style="color:var(--warn)">ข้าม ${skipped.length} รายการของเดือนที่เซฟแล้ว 🔒 (${[...new Set(skipped.map(monthOf))].map(fm).join(', ')})</span><br>`:''}
-      เจอรหัสเคส/รถ <b>${nCode}</b> รายการ · เจอชนิด <b>${nSt}</b> รายการ${nUnk?` · <span style="color:var(--warn)">อ่านทิศทางเงินเข้า/ออกไม่ได้ ${nUnk} รายการ (คลิกที่ตัวเลขเพื่อสลับภายหลัง)</span>`:''}</p>
+      ${nLink?`<span style="color:var(--warn)">🔗 โยงรหัสรถจากทะเบียนในระบบเต็นท์ให้ ${nLink} รายการ (ต้องกดยืนยันในตารางหลังนำเข้า)</span><br>`:''}เจอรหัสเคส/รถ <b>${nCode}</b> รายการ · เจอชนิด <b>${nSt}</b> รายการ${nUnk?` · <span style="color:var(--warn)">อ่านทิศทางเงินเข้า/ออกไม่ได้ ${nUnk} รายการ (คลิกที่ตัวเลขเพื่อสลับภายหลัง)</span>`:''}</p>
       ${fresh.length?`<div class="tablewrap"><table style="min-width:0"><thead><tr><th>วันที่</th><th>รายละเอียด</th><th>ออก</th><th>เข้า</th><th>รหัสรถ</th><th>ชนิด</th></tr></thead><tbody>
       ${fresh.slice(0,8).map(t=>`<tr><td>${fdate(t.tx_date)} ${esc(t.tx_time)}</td><td class="desc">${esc(t.memo||t.description)}</td><td class="num">${t.debit?money(t.debit):''}</td><td class="num">${t.credit?money(t.credit):''}</td><td>${esc(t.car_code)}${t.case_code?` <span class="muted">(${esc(t.case_code)})</span>`:''}</td><td>${esc(t.status)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="warn">ไม่พบรายการ — ลองดูข้อความดิบด้านล่าง แล้วส่งตัวอย่างมาให้ปรับตัวอ่านให้ตรงกับรูปแบบ Statement</p>'}
       <details style="margin-top:10px"><summary>ดูข้อความดิบจากไฟล์ (60 บรรทัดแรก · 【 】 = คอลัมน์รายละเอียด/บันทึกช่วยจำ ที่เว็บจับได้)</summary><pre>${esc(lines.slice(0,60).join('\n').replace(/\u2063/g,'【').replace(/\u2064/g,'】'))}</pre></details>
