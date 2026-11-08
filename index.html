@@ -145,7 +145,7 @@ const ACCOUNTS = {deposit:'เงินจอง', pool:'กองกลาง'}
 const PAIR = ['จำนำ','ซื้อรถ'];                          // เงื่อนไข 1: ต้องมีครบทั้งคู่
 const SEQ  = ['จอง','ปล่อยรถ','คืนจำนำ','ปันผล'];      // เงื่อนไข 2: ต้องเรียงตามลำดับ
 const ALL_STATUS = [...PAIR, ...SEQ];
-const DEFAULT_KW = {'จำนำ':['จำนำ'],'ซื้อรถ':['ซื้อรถ','ซื้อ'],'คอมซื้อ':['คอมซื้อ'],'คอมขาย':['คอมขาย'],'จอง':['จอง'],'ปล่อยรถ':['ปล่อยรถ'],'คืนจำนำ':['คืนจำนำ'],'ปันผล':['ปันผล']};
+const DEFAULT_KW = {'จำนำ':['จำนำ'],'ซื้อรถ':['ซื้อรถ','ซื้อ'],'คอมซื้อ':['คอมซื้อ'],'เงินหมุน':['เงินหมุน'],'คอมขาย':['คอมขาย'],'จอง':['จอง'],'ปล่อยรถ':['ปล่อยรถ'],'คืนจำนำ':['คืนจำนำ'],'ปันผล':['ปันผล']};
 const pad = (n,l=2)=>String(n).padStart(l,'0');
 const r2 = n=>Math.round(n*100)/100;
 const THMON = {'ม.ค.':1,'ก.พ.':2,'มี.ค.':3,'เม.ย.':4,'พ.ค.':5,'มิ.ย.':6,'ก.ค.':7,'ส.ค.':8,'ก.ย.':9,'ต.ค.':10,'พ.ย.':11,'ธ.ค.':12};
@@ -159,6 +159,7 @@ function normInput(v, letter){   // รองรับหลายรหัส �
 function fromByStatus(account,status){
   if(status==='จำนำ'||status==='คืนจำนำ') return 'ป๊า';
   if(status==='จอง'||status==='ปล่อยรถ') return 'ลูกค้า';
+  if(status==='เงินหมุน') return 'เงินหมุน';
   if(status==='คอมซื้อ'||status==='คอมขาย') return 'นายหน้า';
   if(status==='ปันผล') return account==='deposit'?'กองกลาง':(account==='pool'?'เงินจอง':'');
   return '';
@@ -215,14 +216,41 @@ const num=s=>parseFloat(s.replace(/,/g,''));
 // เลขทะเบียน: ต้องมีเลขนำหน้า (เช่น 1กก1234) หรือมีขีด (เช่น กข-1234) เพื่อกันคำไทยทั่วไปที่ตามด้วยตัวเลข
 const PLATE_RE=/(?<!\d)(\d{1,2}\s?[ก-ฮ]{1,3}\s?-?\s?\d{1,4}|[ก-ฮ]{1,3}\s?-\s?\d{1,4})(?!\d)/;
 function extractPlate(text){ const m=PLATE_RE.exec(text||''); return m?m[1].replace(/[\s-]/g,''):''; }
+function detectFor(account,text,kw){
+  kw=kw||DEFAULT_KW; const t=text||'';
+  if(account==='pool'){ if((kw['เงินหมุน']||[]).some(w=>w&&t.includes(w))) return {status:'เงินหมุน',multi:false}; return detectStatus(t,kw); }
+  if(kw['เงินหมุน']){ const k2={...kw}; delete k2['เงินหมุน']; return detectStatus(t,k2); }
+  return detectStatus(t,kw);
+}
+// แยกว่ารหัสรถไหน จำนำ / คืนจำนำ จากข้อความในหมายเหตุ เช่น "N1 จำนำ, N2 คืนจำนำ" หรือ "จำนำ N1 N2 คืนจำนำ N3"
+function pledgeSplit(text,kw){
+  const words={'จำนำ':['จำนำ'],'คืนจำนำ':['คืนจำนำ']};
+  if(kw){ if(kw['จำนำ']) words['จำนำ']=kw['จำนำ']; if(kw['คืนจำนำ']) words['คืนจำนำ']=kw['คืนจำนำ']; }
+  const list=[]; for(const s of Object.keys(words)) for(const w of words[s]) if(w&&w.trim()) list.push([w.trim(),s]);
+  list.sort((a,b)=>b[0].length-a[0].length);
+  const out={};
+  for(const seg of String(text||'').split(/[,;/\n|]+/)){
+    let work=' '+seg+' '; const ev=[];
+    for(const [w,s] of list){ let i; while((i=work.indexOf(w))>=0){ ev.push({i,t:'s',v:s}); work=work.slice(0,i)+' '.repeat(w.length)+work.slice(i+w.length); } }
+    const re=/(?<![A-Za-z0-9])N(\d{1,4})(?!\d)/gi; let m;
+    while((m=re.exec(work))) ev.push({i:m.index,t:'c',v:'N'+m[1]});
+    if(!ev.some(e=>e.t==='s')) continue;
+    ev.sort((a,b)=>a.i-b.i);
+    if(ev[0].t==='s'){ let cur=null; for(const e of ev){ if(e.t==='s') cur=e.v; else if(cur) out[e.v]=cur; } }   // "จำนำ N1 N2 คืนจำนำ N3"
+    else { let buf=[]; for(const e of ev){ if(e.t==='c') buf.push(e.v); else { buf.forEach(c=>{ out[c]=e.v; }); buf=[]; } } }   // "N1 N2 จำนำ"
+  }
+  return out;
+}
+const DESC_RE=/(?:DESC(?:RIPTION)?|รายละเอียด)\s*[:：]/i, NOTE_RE=/(?:NOTE|MEMO|หมายเหตุ|บันทึกช่วยจำ)\s*[:：]/i;
 function splitLabels(full){
-  const di=full.search(/DESC\s*[:：]/i), ni=full.search(/NOTE\s*[:：]/i);
-  if(di<0&&ni<0) return {found:false};
+  const dm=DESC_RE.exec(full), nm=NOTE_RE.exec(full);
+  if(!dm&&!nm) return {found:false};
+  const di=dm?dm.index:-1, ni=nm?nm.index:-1;
   const first=Math.min(...[di,ni].filter(x=>x>=0));
-  const seg=(a,b)=>full.slice(a,b<0?full.length:b);
+  const cut=(m,a,b)=>full.slice(a+m[0].length,b<0?full.length:b).trim();
   let desc='',note='';
-  if(di>=0) desc=seg(di,ni>di?ni:-1).replace(/^DESC\s*[:：]\s*/i,'').trim();
-  if(ni>=0) note=seg(ni,di>ni?di:-1).replace(/^NOTE\s*[:：]\s*/i,'').trim();
+  if(dm) desc=cut(dm,di,ni>di?ni:-1);
+  if(nm) note=cut(nm,ni,di>ni?di:-1);
   return {found:true,prefix:full.slice(0,first).trim(),desc,note};
 }
 function parseStatementLines(lines){
@@ -246,7 +274,7 @@ function parseStatementLines(lines){
       if(nums.length>=2){ cur.balance=val(nums[nums.length-1]); cur.amount=Math.abs(val(nums[nums.length-2])); cur.neg=nums[nums.length-2].startsWith('-'); }
       else if(nums.length===1){ cur.balance=val(nums[0]); if(!opening) cur.amount=null; }
       rows.push(cur);
-    } else if(cur && !/หน้า|page|รวม|Total/i.test(line)){
+    } else if(cur && !/^\s*(?:หน้า|page)\s*\d|^\s*(?:รวม|ยอดรวม|total)(?=\s|$|:)/i.test(line)){
       const sp=splitMemo(line);
       if(!(sp.left.match(AMT_RE)||[]).length){
         if(sp.left.trim()) cur.desc=(cur.desc+' '+sp.left).replace(/\s+/g,' ').trim();
@@ -290,7 +318,7 @@ function makeTx(account,row,kw,source){
   // ถ้า Statement มี DESC : / NOTE : -> แสดง/ค้นรหัสจาก NOTE, DESC เก็บไว้ดูเพิ่ม
   let description=row.desc, memo=row.memo||'', ref=row.memo||row.desc;
   if(row.noteFound){ description=(row.prefix?row.prefix+' · ':'')+row.descTxt; memo=row.note; ref=row.note; }
-  const codes=extractCodes(ref), st=detectStatus(ref,kw);
+  const codes=extractCodes(ref), st=detectFor(account,ref,kw);
   // ทิศทางเงิน: ถ้าอ่านไม่ได้ ยังต้องเก็บจำนวนเงินไว้ (เดาเป็นเงินออก แล้วติดธง ?)
   let dir=row.dir, unk=false;
   if(dir===0&&row.amount!=null){
@@ -299,7 +327,7 @@ function makeTx(account,row,kw,source){
   }
   const debit=dir===-1?row.amount:0, credit=dir===1?row.amount:0;
   return {account,tx_date:row.date,tx_time:row.time,description,memo,debit:debit||0,credit:credit||0,balance:row.balance,
-    case_code:codes.case_code,car_code:codes.cars.join(','),plate:extractPlate(ref),from_acc:fromByStatus(account,st.status),remark:'',car_link:'',status:st.status,manual_clear:false,source_file:source||'',
+    case_code:codes.case_code,car_code:codes.cars.join(','),plate:extractPlate(ref),from_acc:fromByStatus(account,st.status),remark:'',car_link:'',status:st.status,manual_clear:false,memo_user:false,source_file:source||'',
     dir_unknown:unk, uniq:[account,row.date,row.time,row.amount,row.balance,description,memo].join('|')};
 }
 
@@ -330,7 +358,9 @@ function evaluate(txs,ref){
   const conflicts=new Map(); for(const [pl,s] of Object.entries(p2c)) if(s.size>1) conflicts.set(pl,[...s].sort());
   const subj=new Map(), txKey=new Map(), txKeys=new Map(), txVia=new Map();
   for(const t of txs){
-    let keys=splitCodes(t.car_code), key=keys[0]||null;
+    const per=(t.status==='จำนำ'||t.status==='คืนจำนำ')?pledgeSplit(t.remark,ref&&ref.kw):null;
+    let keys=splitCodes(t.car_code); if(per) for(const c of Object.keys(per)) if(!keys.includes(c)) keys.push(c);
+    let key=keys[0]||null;
     if(!key&&t.case_code){ const s=c2c[t.case_code]; if(s&&s.size===1){ key=[...s][0]; keys=[key]; txVia.set(t.id,'เคส '+t.case_code); } }
     if(!key&&t.plate&&t.car_link!=='rejected'){ const s=p2c[t.plate]; if(s&&s.size===1){ key=[...s][0]; keys=[key]; txVia.set(t.id,'ทะเบียน '+t.plate); } }
     if(!key){ key=t.case_code||t.plate||null; if(key) keys=[key]; }
@@ -340,7 +370,7 @@ function evaluate(txs,ref){
     for(const k of keys){
       if(!subj.has(k)) subj.set(k,{key:k,isCar:/^N\d/.test(k),plates:new Set(),have:new Set(),cases:new Set(),count:0,multiN:0,inSum:0,outSum:0,txs:[]});
       const s=subj.get(k); s.count++; s.txs.push(t); if(t.plate) s.plates.add(t.plate);
-      if(t.status) s.have.add(t.status);
+      { const stK=(per&&per[k])||t.status; if(stK) s.have.add(stK); }
       if(t.case_code) s.cases.add(t.case_code);
       if(multi) s.multiN++; else { s.inSum+=+t.credit||0; s.outSum+=+t.debit||0; }   // รายการที่ใช้ร่วมหลายคัน ยังไม่แยกยอด จึงไม่นับ
     }
@@ -365,7 +395,7 @@ function evaluate(txs,ref){
 }
 function txState(t,ev){
   if(t.manual_clear) return 'clear';
-  if(!t.car_code&&!t.case_code) return 'nocode';
+  if(!t.car_code&&!t.case_code){ const ks=(ev.txKeys&&ev.txKeys.get(t.id))||[]; if(!ks.some(k=>/^N\d/.test(k))) return 'nocode'; }
   if(!t.status) return 'nostatus';
   const ks=ev.txKeys&&ev.txKeys.get(t.id), list=(ks&&ks.length)?ks:[ev.txKey.get(t.id)];
   return list.every(k=>{ const s=ev.subj.get(k); return s&&s.cleared; })?'clear':'pending';
@@ -397,10 +427,10 @@ function carryOver(newRows,oldRows){
     const o=m.o, r={...n};
     for(const f of ['memo','from_acc','car_code','case_code','plate','status','remark','car_link']){
       if(o[f]==null||o[f]==='') continue;
-      if(f==='memo'&&o.memo==='-') continue;   // เดิมไม่มี NOTE -> ใช้ NOTE จากไฟล์ใหม่
+      if(f==='memo'&&!o.memo_user) continue;   // รายละเอียด = NOTE จากไฟล์ใหม่เสมอ ยกเว้นที่ผู้ใช้พิมพ์แก้เอง
       r[f]=o[f];
     }
-    r.manual_clear=!!o.manual_clear;
+    r.manual_clear=!!o.manual_clear; r.memo_user=!!o.memo_user;
     if(n.dir_unknown&&!o.dir_unknown){ r.debit=o.debit; r.credit=o.credit; r.dir_unknown=false; }
     return r;
   });
@@ -418,13 +448,17 @@ function closingOf(list){
 }
 // ==LOGIC-END==
 
-if(typeof module!=='undefined') module.exports={fromByStatus,splitCodes,plateChoices,autoLinkOne,carryOver,closingOf,monthOf,extractPlate,splitLabels,buildShortfall,shortfallText,splitMemo,buildLine,MK,MK2,parseStatementLines,extractCodes,detectStatus,evaluate,txState,makeTx,normInput,DEFAULT_KW};
+if(typeof module!=='undefined') module.exports={detectFor,pledgeSplit,fromByStatus,splitCodes,plateChoices,autoLinkOne,carryOver,closingOf,monthOf,extractPlate,splitLabels,buildShortfall,shortfallText,splitMemo,buildLine,MK,MK2,parseStatementLines,extractCodes,detectStatus,evaluate,txState,makeTx,normInput,DEFAULT_KW};
 </script>
 
 <script>
 if(typeof document!=='undefined'){
 // ===================== ชั้นเก็บข้อมูล =====================
 const sb=(SUPABASE_URL&&SUPABASE_KEY&&window.supabase)?window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY):null;
+const DROP=new Set();   // คอลัมน์ที่ฐานข้อมูลยังไม่มี (ยังไม่ได้รัน SQL ใหม่) -> ข้ามไปก่อนเพื่อไม่ให้บันทึกล้ม
+const missingCol=err=>{ const m=/Could not find the '([^']+)' column/.exec((err&&err.message)||''); return m?m[1]:null; };
+const omitDropped=o=>{ if(!DROP.size) return o; const r={...o}; DROP.forEach(k=>delete r[k]); return r; };
+function noteDrop(c){ DROP.add(c); toast(`ฐานข้อมูลยังไม่มีคอลัมน์ ${c} — บันทึกต่อได้ แต่ข้อมูลส่วนนี้จะยังไม่ถูกเก็บ (รัน supabase_fix_columns.sql แล้วรีเฟรช)`); }
 const LS='stmt_tx_v1', LSK='stmt_kw_v1', LSM='stmt_months_v1';
 const DB={
   async load(){
@@ -439,8 +473,11 @@ const DB={
       for(const r of rows) if(!have.has(r.uniq)){ have.add(r.uniq); add.push({...r,id:++id}); }
       localStorage.setItem(LS,JSON.stringify(cur.concat(add))); return add; }
     let out=[]; for(let i=0;i<rows.length;i+=200){
-      const chunk=rows.slice(i,i+200).map(({id,created_at,updated_at,...r})=>r);
-      const {data,error}=await sb.from('statement_tx').upsert(chunk,{onConflict:'uniq',ignoreDuplicates:true}).select(); if(error) throw error; out=out.concat(data||[]); }
+      let chunk=rows.slice(i,i+200).map(({id,created_at,updated_at,...r})=>omitDropped(r));
+      for(let tries=0;;tries++){
+        const {data,error}=await sb.from('statement_tx').upsert(chunk,{onConflict:'uniq',ignoreDuplicates:true}).select();
+        if(!error){ out=out.concat(data||[]); break; }
+        const c=missingCol(error); if(c&&tries<6){ noteDrop(c); chunk=chunk.map(omitDropped); continue; } throw error; } }
     return out;
   },
   async removeAccount(acc){
@@ -449,7 +486,9 @@ const DB={
   },
   async update(id,patch){
     if(!sb){ const cur=JSON.parse(localStorage.getItem(LS)||'[]'); const r=cur.find(x=>x.id===id); if(r) Object.assign(r,patch); localStorage.setItem(LS,JSON.stringify(cur)); return; }
-    const {error}=await sb.from('statement_tx').update({...patch,updated_at:new Date().toISOString()}).eq('id',id); if(error) throw error;
+    for(let tries=0;;tries++){
+      const {error}=await sb.from('statement_tx').update({...omitDropped(patch),updated_at:new Date().toISOString()}).eq('id',id);
+      if(!error) return; const c=missingCol(error); if(c&&tries<6){ noteDrop(c); continue; } throw error; }
   },
   async remove(ids){
     if(!sb){ const cur=JSON.parse(localStorage.getItem(LS)||'[]'); localStorage.setItem(LS,JSON.stringify(cur.filter(x=>!ids.includes(x.id)))); return; }
@@ -469,6 +508,14 @@ const DB={
     if(!sb){ const cur=JSON.parse(localStorage.getItem(LSM)||'{}'); if(cur[acc]) delete cur[acc][m]; localStorage.setItem(LSM,JSON.stringify(cur)); return; }
     const {error}=await sb.from('stmt_months').delete().eq('account',acc).eq('month',m); if(error) throw error;
   },
+  async getSetting(k){
+    if(!sb){ try{return JSON.parse(localStorage.getItem('stmt_set_'+k))}catch(e){return null} }
+    const {data}=await sb.from('stmt_settings').select('value').eq('key',k).maybeSingle(); return data?data.value:null;
+  },
+  async setSetting(k,v){
+    if(!sb){ localStorage.setItem('stmt_set_'+k,JSON.stringify(v)); return; }
+    const {error}=await sb.from('stmt_settings').upsert({key:k,value:v}); if(error) throw error;
+  },
   async loadKw(){
     if(!sb){ try{return JSON.parse(localStorage.getItem(LSK))||null}catch(e){return null} }
     const {data}=await sb.from('stmt_settings').select('value').eq('key','keywords').maybeSingle(); return data?data.value:null;
@@ -480,7 +527,7 @@ const DB={
 };
 
 // ===================== state / helpers =====================
-const S={fdate1:'',fdate2:'',fstatus:'',fdir:'',fcar:'',open:new Set(),showCleared:true,cars:new Map(),ref:null,carsOk:false,locks:{deposit:{},pool:{}},txs:[],kw:DEFAULT_KW,tab:'deposit',filter:'all',month:'',q:'',from:'',fc:{}};
+const S={fdate1:'',fdate2:'',fstatus:'',fdir:'',fcar:'',open:new Set(),showCleared:true,cars:new Map(),ref:null,carsOk:false,locks:{deposit:{},pool:{}},txs:[],kw:JSON.parse(JSON.stringify(DEFAULT_KW)),kwDel:[],tab:'deposit',filter:'all',month:'',q:'',from:'',fc:{}};
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>(+n||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -521,7 +568,7 @@ const toast=m=>{ const t=document.createElement('div'); t.textContent=m; t.style
 const txSort=(a,b)=>String(a.tx_date||'9999-99-99').localeCompare(String(b.tx_date||'9999-99-99'))||((+a.id||0)-(+b.id||0));
 function recompute(){
   S.txs.sort(txSort);
-  EV=evaluate(S.txs,S.ref); const fc={};
+  EV=evaluate(S.txs,Object.assign({},S.ref||{},{kw:S.kw})); const fc={};
   for(const t of S.txs){ if(!t.from_acc) continue; const k=EV.txKey.get(t.id); if(k&&/^N\d/.test(k)) (fc[t.from_acc]=fc[t.from_acc]||new Set()).add(k); }
   S.fc=fc;
 }
@@ -561,7 +608,8 @@ const noteEmpty=t=>{   // รายละเอียด (NOTE) ยังไม�
   return hasMemo||!String(t.description||'').trim();
 };
 const filterCount=()=>[S.filter!=='all',S.month,S.from,S.q.trim(),S.fdate1,S.fdate2,S.fstatus,S.fdir,S.fcar].filter(Boolean).length;
-function resetFilters(){ S.filter='all'; S.month=''; S.q=''; S.from=''; S.fdate1=''; S.fdate2=''; S.fstatus=''; S.fdir=''; S.fcar=''; }
+const latestMonth=acc=>S.txs.filter(t=>t.account===acc).map(monthOf).filter(Boolean).sort().pop()||'';
+function resetFilters(){ S.filter='all'; S.month=(S.tab==='deposit'||S.tab==='pool')?latestMonth(S.tab):''; S.q=''; S.from=''; S.fdate1=''; S.fdate2=''; S.fstatus=''; S.fdir=''; S.fcar=''; }
 function applyFilters(all){
   let list=all.filter(t=>!S.month||monthOf(t)===S.month);
   if(S.from) list=list.filter(t=>(t.from_acc||'')===S.from);
@@ -666,6 +714,9 @@ function rowHtml(t){
   // ----- เคลียร์ (เลือก) -----
   const clsC=t.manual_clear?'ok':(s==='clear'?'auto':'');   // เขียวเข้ม = กดเคลียร์เอง, เขียวจาง = ระบบเคลียร์ให้ตามกติกา
   const ta='style="width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px"';
+  const per=(t.status==='จำนำ'||t.status==='คืนจำนำ')?pledgeSplit(t.remark,S.kw):{};
+  const perOnly=Object.keys(per).filter(c=>!codes.includes(c));
+  const perTag=c=>per[c]?`<span class="pst" style="font-size:10px;margin-left:3px;padding:0 4px;border-radius:6px;background:${per[c]==='จำนำ'?'#fef3c7':'#ede9fe'}">${per[c]}</span>`:'';
   const main=`<tr class="${open?'opened':''}">
     <td class="dt">${lk?'🔒 ':''}${fdate(t.tx_date)}<div class="muted tm">${esc(t.tx_time||'')}</div></td>
     <td class="num">${out}${(+t.debit&&t.dir_unknown)?unk:''}</td><td class="num">${inn}${(+t.credit&&t.dir_unknown)?unk:''}</td><td class="num muted">${t.balance==null?'':money(t.balance)}</td>
@@ -673,8 +724,8 @@ function rowHtml(t){
     <td><select data-id="${t.id}" data-f="status" ${dis}>${statusOpts(t.status)}</select></td>
     <td><input type="text" class="cin" list="fromlist" data-id="${t.id}" data-f="from_acc" ${dis} value="${esc(t.from_acc||'')}" placeholder="บัญชีที่โอน"></td>
     <td class="clr ${clsC}"><label class="clrbox" title="${(!t.manual_clear&&s==='clear')?'ระบบเคลียร์ให้อัตโนมัติตามกติกา — ติ๊กเพื่อเคลียร์เอง':'ติ๊กเพื่อเคลียร์ กดอีกครั้งเพื่อยกเลิก'}"><input type="checkbox" data-id="${t.id}" data-f="manual_clear" ${dis} ${t.manual_clear?'checked':''}>${t.manual_clear?'<span>เคลียร์</span>':''}</label></td>
-    <td><div class="tags">${codes.map(c=>`<span class="tag${(S.carsOk&&!carInfo(c))?' bad':''}">${esc(c)}${lk?'':`<a data-rmcar="${t.id}|${esc(c)}" title="เอาออก">×</a>`}</span>`).join('')}${lk?'':`<input type="text" class="addcar" list="carlist" data-addcar="${t.id}" placeholder="+" title="เพิ่มรหัสรถ (พิมพ์แล้วกด Enter)" autocomplete="off">`}${lkInline}${choiceInline}</div></td>
-    <td><div class="rm"><input type="text" class="cin" data-id="${t.id}" data-f="remark" ${dis} value="${esc(t.remark||'')}" placeholder="โน้ตเพิ่ม" title="${esc(t.remark||'')}">${wl.length?`<button class="wn" data-toggle="${t.id}" title="มีแจ้งเตือน ${wl.length} รายการ (กดดู)">⚠${wl.length}</button>`:''}</div></td>
+    <td><div class="tags">${codes.map(c=>`<span class="tag${(S.carsOk&&!carInfo(c))?' bad':''}">${esc(c)}${perTag(c)}${lk?'':`<a data-rmcar="${t.id}|${esc(c)}" title="เอาออก">×</a>`}</span>`).join('')}${perOnly.map(c=>`<span class="tag" style="border-style:dashed" title="รหัสรถจากหมายเหตุ">${esc(c)}${perTag(c)}</span>`).join('')}${lk?'':`<input type="text" class="addcar" list="carlist" data-addcar="${t.id}" placeholder="+" title="เพิ่มรหัสรถ (พิมพ์แล้วกด Enter)" autocomplete="off">`}${lkInline}${choiceInline}</div></td>
+    <td><div class="rm"><input type="text" class="cin" data-id="${t.id}" data-f="remark" ${dis} value="${esc(t.remark||'')}" placeholder="${(t.status==='จำนำ'||t.status==='คืนจำนำ')?'แยกรายคัน เช่น N1 จำนำ, N2 คืนจำนำ':'โน้ตเพิ่ม'}" title="${esc(t.remark||'')}">${wl.length?`<button class="wn" data-toggle="${t.id}" title="มีแจ้งเตือน ${wl.length} รายการ (กดดู)">⚠${wl.length}</button>`:''}</div></td>
     <td class="act"><button class="chip xb" data-toggle="${t.id}" title="${open?'ซ่อน':'ดู'}รายละเอียดเพิ่มเติม (DESC / แจ้งเตือน)">${open?'▴':'▾'}</button><button class="chip" data-del="${t.id}" ${dis} title="ลบ">✕</button></td></tr>`;
   if(!open) return main;
   const xrow=`<tr class="xrow"><td colspan="11"><div class="xgrid">
@@ -776,7 +827,7 @@ document.addEventListener('click',async e=>{
     try{ await DB.update(+id,{car_code:car}); x.car_code=car; recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   else if(t.dataset.rmcar){ e.preventDefault(); const [id,code]=t.dataset.rmcar.split('|'), x=S.txs.find(r=>r.id===+id); if(!x) return; await saveCars(+id,splitCodes(x.car_code).filter(c=>c!==code)); }
   else if(t.dataset.toggle){ const id=+t.dataset.toggle; if(S.open.has(id)) S.open.delete(id); else S.open.add(id); render(); }
-  else if(t.dataset.goto){ S.tab=t.dataset.goto; resetFilters(); S.filter='nocode'; render(); }
+  else if(t.dataset.goto){ S.tab=t.dataset.goto; resetFilters(); S.month=''; S.filter='nocode'; render(); }
   else if(t.dataset.pickcar){ const [id,car]=t.dataset.pickcar.split('|'), x=S.txs.find(r=>r.id===+id); if(!x||isLocked(x.account,monthOf(x))) return;
     const patch={car_code:car,car_link:'ok'}; try{ await DB.update(x.id,patch); Object.assign(x,patch); recompute(); render(); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } }
   else if(t.dataset.linkok||t.dataset.linkno){ const id=+(t.dataset.linkok||t.dataset.linkno), x=S.txs.find(r=>r.id===id); if(!x||isLocked(x.account,monthOf(x))) return;
@@ -803,10 +854,10 @@ document.addEventListener('change',async e=>{
   }
   if(f==='memo'&&!String(v).trim()) v='-';
   if(f==='from_acc') v=String(v).trim();
-  const patch={[f]:v}; if(f==='car_code') patch.car_link='';
+  const patch={[f]:v}; if(f==='car_code') patch.car_link=''; if(f==='memo') patch.memo_user=true;
   if(f==='status'&&!x.from_acc){ const fa=fromByStatus(x.account,v); if(fa) patch.from_acc=fa; }
   if(f==='memo'){   // พิมพ์ NOTE เอง -> เติมรหัส/ทะเบียน/ชนิดที่ยังว่างให้ (ไม่ทับช่องที่มีค่า)
-    const c=extractCodes(v), pl=extractPlate(v), st=detectStatus(v,S.kw);
+    const c=extractCodes(v), pl=extractPlate(v), st=detectFor(x.account,v,S.kw);
     if(!x.car_code&&c.cars.length) patch.car_code=c.cars.join(','); if(!x.case_code&&c.case_code) patch.case_code=c.case_code;
     if(!x.plate&&pl) patch.plate=pl; if(!x.status&&st.status) patch.status=st.status;
     { const stt=patch.status||x.status; if(!x.from_acc&&stt){ const fa=fromByStatus(x.account,stt); if(fa) patch.from_acc=fa; } }
@@ -818,7 +869,7 @@ document.addEventListener('input',e=>{ if(e.target.id==='q'){ S.q=e.target.value
 document.addEventListener('click',async e=>{
   if(e.target.id==='btnRedetect'){
     let n=0; for(const t of S.txs.filter(r=>r.account===S.tab&&!isLocked(r.account,monthOf(r)))){
-      const ref=t.memo||t.description, c=extractCodes(ref), s=detectStatus(ref,S.kw), p={};
+      const ref=t.memo||t.description, c=extractCodes(ref), s=detectFor(t.account,ref,S.kw), p={};
       if(!t.case_code&&c.case_code) p.case_code=c.case_code; if(!t.plate&&extractPlate(ref)) p.plate=extractPlate(ref); if(!t.car_code&&c.cars.length) p.car_code=c.cars.join(','); if(!t.status&&s.status) p.status=s.status;
       { const stt=p.status||t.status; if(!t.from_acc&&stt){ const fa=fromByStatus(t.account,stt); if(fa) p.from_acc=fa; } }
       { const al=autoLinkOne({...t,...p},S.ref); if(al) Object.assign(p,al); }
@@ -832,7 +883,7 @@ document.addEventListener('click',async e=>{
   if(e.target.id==='btnKw') openKw();
   if(e.target.id==='btnShort') openShort();
   if(e.target.id==='btnResetF'){ resetFilters(); render(); }
-  if(e.target.id==='btnEmptyAll'){ resetFilters(); S.filter='emptynote'; render(); }
+  if(e.target.id==='btnEmptyAll'){ resetFilters(); S.month=''; S.filter='emptynote'; render(); }
   if(e.target.id==='btnTogCleared'){ S.showCleared=!S.showCleared; render(); }
   if(e.target.id==='btnExpAll'){ if(S.open.size) S.open.clear(); else S.txs.filter(r=>r.account===S.tab).slice(0,300).forEach(r=>S.open.add(r.id)); render(); }
   if(e.target.id==='btnMonths') openMonths();
@@ -862,7 +913,8 @@ function bindDrop(){
 
 // ===================== import PDF =====================
 const closeModal=()=>$('#modal').classList.remove('show');
-const showModal=h=>{ $('#modalBox').innerHTML=h; $('#modal').classList.add('show'); };
+const showModal=h=>{ { const b=$('#modalBox'); b.onclick=null; b.onkeydown=null; }
+   $('#modalBox').innerHTML=h; $('#modal').classList.add('show'); };
 let PDF_PW='', CANCELLED=false;   // จำรหัสไว้ในหน่วยความจำจนกว่าจะปิดหน้าเว็บ ไม่บันทึกที่ไหน
 function askPassword(wrong){ return new Promise(res=>{
   showModal(`<h3>🔒 ไฟล์ PDF นี้มีรหัสผ่าน</h3>${wrong?'<p class="warn">รหัสไม่ถูกต้อง ลองอีกครั้ง</p>':'<p class="muted">ใส่รหัสเพื่อเปิดอ่านรายการ (รหัสจะไม่ถูกบันทึก)</p>'}
@@ -931,14 +983,30 @@ async function importFile(file){
 
 // ===================== ตั้งค่าคำค้น =====================
 function openKw(){
-  showModal(`<h3>คำค้นสำหรับจับชนิดจากรายการใน Statement</h3>
-    <p class="muted">คั่นหลายคำด้วยเครื่องหมายจุลภาค (,) เว็บจะหาจากคอลัมน์รายการ/หมายเหตุ ระบบเลือกคำที่ยาวกว่าก่อน (เช่น "คืนจำนำ" จะไม่ถูกนับเป็น "จำนำ")</p>
-    <div class="kw">${statusList().map(s=>`<label>${esc(s)}${ALL_STATUS.includes(s)?'':' <span class="muted">(เพิ่มเอง)</span>'}</label><input type="text" data-kw="${esc(s)}" value="${esc((S.kw[s]||[]).join(', '))}">`).join('')}
-    <label style="margin-top:16px">➕ เพิ่มชนิดใหม่</label><input type="text" id="newSt" placeholder="ชื่อชนิด"><input type="text" id="newKw" placeholder="คำค้น คั่นด้วย , (เว้นว่าง = ใช้ชื่อชนิดเป็นคำค้น)" style="margin-top:6px"></div>
-    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end"><button class="btn sec" onclick="document.getElementById('modal').classList.remove('show')">ปิด</button><button class="btn" id="saveKw">บันทึก</button></div>`);
-  $('#saveKw').onclick=async()=>{ const v={}; document.querySelectorAll('[data-kw]').forEach(i=>{ v[i.dataset.kw]=i.value.split(',').map(x=>x.trim()).filter(Boolean); });
-    const ns=$('#newSt').value.trim(); if(ns){ const k=$('#newKw').value.split(',').map(x=>x.trim()).filter(Boolean); v[ns]=k.length?k:[ns]; }
-    try{ await DB.saveKw(v); S.kw=v; closeModal(); toast('บันทึกคำค้นแล้ว (ใช้กับการนำเข้า/ตรวจซ้ำครั้งถัดไป)'); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } };
+  const W={}; statusList().forEach(s=>{ W[s]=[...(S.kw[s]||[])]; });
+  const DEL=new Set(S.kwDel||[]);
+  const draw=()=>{
+    const sts=Object.keys(W);
+    showModal(`<h3>คำค้นสำหรับจับชนิดจากรายการใน Statement</h3>
+    <p class="muted">กด × เพื่อลบคำ · พิมพ์คำใหม่แล้วกด Enter หรือ + เพื่อเพิ่ม · ชนิดที่เพิ่มเองหรือชนิดเสริมลบได้ด้วยปุ่ม 🗑 (ชนิดหลักของระบบลบไม่ได้)</p>
+    <div class="kw">${sts.map(s=>`<div style="margin:10px 0 4px;display:flex;align-items:center;gap:8px"><b>${esc(s)}</b>${ALL_STATUS.includes(s)?'':`<span class="muted">(เสริม)</span><button class="btn sec" data-delst="${esc(s)}" style="padding:2px 8px">🗑 ลบชนิด</button>`}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${W[s].map((w,i)=>`<span class="tag" style="background:#eef2ff;border-radius:12px;padding:2px 8px">${esc(w)} <a href="#" data-delw="${esc(s)}|${i}" style="color:#b42318;text-decoration:none">×</a></span>`).join('')}
+      <input type="text" data-addw="${esc(s)}" placeholder="+ คำค้น" style="width:110px"><button class="btn sec" data-addb="${esc(s)}" style="padding:2px 8px">+</button></div>`).join('')}
+    <label style="margin-top:16px;display:block">➕ เพิ่มชนิดใหม่</label><input type="text" id="newSt" placeholder="ชื่อชนิด"> <input type="text" id="newKw" placeholder="คำค้น คั่นด้วย , (เว้นว่าง = ใช้ชื่อชนิด)"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end"><button class="btn sec" id="closeKw">ปิด</button><button class="btn" id="saveKw">บันทึก</button></div>`);
+    const add=s=>{ const i=document.querySelector(`[data-addw="${CSS.escape(s)}"]`); const v=i.value.split(',').map(x=>x.trim()).filter(Boolean); v.forEach(x=>{ if(!W[s].includes(x)) W[s].push(x); }); draw(); };
+    document.querySelectorAll('[data-delw]').forEach(a=>a.onclick=ev=>{ ev.preventDefault(); const [s,i]=a.dataset.delw.split('|'); W[s].splice(+i,1); draw(); });
+    document.querySelectorAll('[data-addb]').forEach(b=>b.onclick=()=>add(b.dataset.addb));
+    document.querySelectorAll('[data-addw]').forEach(i=>i.onkeydown=ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); add(i.dataset.addw); } });
+    document.querySelectorAll('[data-delst]').forEach(b=>b.onclick=()=>{ const s=b.dataset.delst; const n=S.txs.filter(t=>t.status===s).length;
+      if(!confirm(`ลบชนิด "${s}" ?`+(n?`\nมี ${n} รายการที่ใช้ชนิดนี้อยู่ (ข้อมูลในรายการจะไม่ถูกลบ แต่จะไม่ถูกจับชนิดนี้อัตโนมัติอีก)`:''))) return;
+      delete W[s]; DEL.add(s); draw(); });
+    $('#closeKw').onclick=closeModal;
+    $('#saveKw').onclick=async()=>{ const v={}; Object.keys(W).forEach(s=>{ v[s]=W[s]; });
+      const ns=$('#newSt').value.trim(); if(ns){ const k=$('#newKw').value.split(',').map(x=>x.trim()).filter(Boolean); v[ns]=k.length?k:[ns]; DEL.delete(ns); }
+      try{ await DB.saveKw(v); await DB.setSetting('kw_deleted',[...DEL].filter(s=>!(s in v))); S.kw=v; S.kwDel=[...DEL].filter(s=>!(s in v)); closeModal(); recompute(); render(); toast('บันทึกคำค้นแล้ว (ใช้กับการนำเข้า/ตรวจซ้ำครั้งถัดไป)'); }catch(err){ toast('บันทึกไม่สำเร็จ: '+err.message); } };
+  };
+  draw();
 }
 
 // ===================== start =====================
@@ -964,11 +1032,14 @@ async function gate(){
   try{
     S.txs=await DB.load(); let kw=await DB.loadKw();
     if(kw&&kw['ซื้อ']){ kw['ซื้อรถ']=[...new Set([...(kw['ซื้อรถ']||[]),...kw['ซื้อ'],'ซื้อรถ'])]; delete kw['ซื้อ']; try{ await DB.saveKw(kw); }catch(e){} }
+    try{ S.kwDel=(await DB.getSetting('kw_deleted'))||[]; }catch(e){ S.kwDel=[]; }
     if(kw) S.kw={...DEFAULT_KW,...kw};
+    for(const d of S.kwDel){ if(!ALL_STATUS.includes(d)) delete S.kw[d]; }
     for(const t of S.txs.filter(t=>t.status==='ซื้อ')){ t.status='ซื้อรถ'; try{ await DB.update(t.id,{status:'ซื้อรถ'}); }catch(e){} }
   }catch(err){ toast('โหลดข้อมูลไม่สำเร็จ: '+err.message); }
   try{ S.locks=await DB.loadMonths(); }catch(err){ toast('โหลดเดือนที่เซฟไม่ได้ (ยังไม่ได้รัน SQL ใหม่?): '+err.message); }
   await loadCars();
+  S.month=latestMonth(S.tab);   // เปิดเว็บมาให้ขึ้นเดือนล่าสุดก่อนเสมอ
   recompute(); render();
 })();
 }
